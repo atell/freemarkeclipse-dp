@@ -1,10 +1,7 @@
 package org.jboss.ide.eclipse.freemarker.editor;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-
+import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.IRegion;
@@ -15,16 +12,26 @@ import org.eclipse.jface.text.hyperlink.IHyperlinkDetector;
 import org.jboss.ide.eclipse.freemarker.Plugin;
 
 public class AtellHyperlinkDetector implements IHyperlinkDetector {
-   static String[] tags=new String[]{"<#include"};
-//   static {
-//      try{
-//      String dpTagsString = Plugin.getInstance().getResourceBundle().getString("dp_tags");
-//      tags = dpTagsString.split(",");
-//      }catch(RuntimeException e){
-//         Plugin.log(e.getMessage());
-//      }
-//   }
-//   static String   basePtah = Plugin.getInstance().getResourceBundle().getString("dp_freemarker_base_path");
+   static String[]  tags = new String[] { "<#include", "<#import" };
+
+   static {
+      try {
+         String dpTagsString = Plugin.getInstance().getResourceBundle().getString("dp_tags");
+         tags = dpTagsString.split(",");
+      } catch (RuntimeException e) {
+         Plugin.log(e.getMessage());
+      }
+   }
+   private String   filePath;
+   private IProject iproject;
+
+   public AtellHyperlinkDetector(Editor editor) {
+      IFile ifile = editor.getFile();
+      iproject = editor.getProject();
+      this.filePath = ifile.getProjectRelativePath().toOSString();
+//      Plugin.log(ifile.getProjectRelativePath().toOSString());
+//      Plugin.log(ifile.getFullPath().toOSString());
+   }
 
    public IHyperlink[] detectHyperlinks(ITextViewer textViewer, IRegion region, boolean canShowMultipleHyperlinks) {
       IDocument doc = textViewer.getDocument();// get doc
@@ -48,49 +55,90 @@ public class AtellHyperlinkDetector implements IHyperlinkDetector {
       String content = null;
       int leftDoubleQuote = 0, rightDoubleQuote = 0;
       for (String tag : tags) {
-         int index = line.indexOf(tag);
-         if (index != -1) {
-            //找出“<#include 或 <#import ”之后的双引号内的content
-            int i = index + tag.length();
-            while (i < line.length() && line.charAt(i) != '\"') {
-               i++;
-            }
-            if (i < line.length()) {
-               leftDoubleQuote = i;
-               i++;
-               while (i < line.length() && line.charAt(i) != '\"') {
+         int i = 0;
+         while (i < line.length()) {
+            int index = line.indexOf(tag, i);
+            if (index != -1) {
+               //找出“<#include 或 <#import ”之后的双引号内的content
+               i = index + tag.length();
+               while (i < line.length() && Character.isWhitespace(line.charAt(i))) {
                   i++;
                }
-               if (i < line.length()) {
-                  rightDoubleQuote = i;
-                  content = line.substring(leftDoubleQuote + 1, rightDoubleQuote);
+               if (i < line.length() && line.charAt(i) == '\"') {
+                  leftDoubleQuote = i;
+                  i++;
+                  while (i < line.length() && line.charAt(i) != '\"') {
+                     i++;
+                  }
+                  if (i < line.length()) {
+                     rightDoubleQuote = i;
+                     content = line.substring(leftDoubleQuote + 1, rightDoubleQuote);
+                     //找到content，如果当前位置currentPos在content范围内，则content为最终结果，否则继续下一个tag
+                     if (content.length() > 0) {
+                        //当前位置currentPos在content范围内，则content为最终结果
+                        if (leftDoubleQuote <= currentPosInLine && currentPosInLine <= rightDoubleQuote) {
+                           break;
+                        }
+                        //content不在鼠標範圍內，不是最終結果，則继续下一个tag
+                        content = null;
+                     }
+                  }
                }
-            }
-         }
-         //找到content，如果当前位置currentPos在content范围内，则content为最终结果，否则继续下一个tag
-         if (content != null && content.length() > 0) {
-            //当前位置currentPos在content范围内，则content为最终结果
-            if (leftDoubleQuote <= currentPosInLine && currentPosInLine <= rightDoubleQuote) {
+            } else {
                break;
             }
-            //content不在鼠標範圍內，不是最終結果，則继续下一个tag
-            content = null;
          }
+
       }
       //存在content，則region为[left,right], path为...
       if (content != null && content.length() > 0) {
-         Region contentRegion = new Region(lineOffset+leftDoubleQuote+1, content.length());
-         return new IHyperlink[] { new AtellHyperlink(contentRegion, content, textViewer) };
+         Region contentRegion = new Region(lineOffset + leftDoubleQuote + 1, content.length());
+         return new IHyperlink[] { new AtellHyperlink(contentRegion, getPath(content), this.iproject) };
       }
 
-      //               String pathStr = doc.get(leftDoubleQuotation + 1, rightDoubleQuotation - leftDoubleQuotation - 1);
-      //               path = pathStr.replace(',', '/');
-      //               if (path.startsWith("search/upload/")) {
-      //                  path = "/templates/" + path.substring(7);
-      //               } else {
-      //                  path = "/templates/search/controls/" + path;
-      //               }
-         return null;
+      return null;
 
+   }
+
+   private String getPath(String content) {
+      //將content最後一个/后的内容去掉
+      String originContent = content;
+      int index;
+      while ((index = content.lastIndexOf('/')) != -1) {
+         String leftPartContent = content.substring(0, index + 1);
+         //判断content是否在filePath之内，如果有，则拼装成结果
+         int index2 = filePath.indexOf(leftPartContent);
+         if (index2 != -1) {
+            String rightPartContent = originContent.substring(index + 1);
+            System.out.println(leftPartContent);
+            return filePath.substring(0, index2 + leftPartContent.length()) + rightPartContent;
+         }
+         content = leftPartContent.substring(0, leftPartContent.length()-1);//去除最后的/
+      }
+      return originContent;
+   }
+   
+   private static String getPath2(String content) {
+      //將content最後一个/后的内容去掉
+      String filePath=  "src/main/webapp/WEB-INF/pages/index/navigation.ftl";
+      String defaultPath = content;
+      int index;
+      while ((index = content.lastIndexOf('/')) != -1) {
+         String leftPartContent = content.substring(0, index + 1);
+         //判断content是否在filePath之内，如果有，则拼装成结果
+         int index2 = filePath.indexOf(leftPartContent);
+         if (index2 != -1) {
+            String rightPartContent = defaultPath.substring(index + 1);
+            System.out.println(leftPartContent);
+            return filePath.substring(0, index2 + leftPartContent.length()) + rightPartContent;
+         }
+         content = leftPartContent.substring(0, leftPartContent.length()-1);//去除最后的/
+      }
+      return defaultPath;
+
+   }
+   
+   public static void main(String[] args) {
+      System.out.println(getPath2("pages/ss.xx"));
    }
 }
